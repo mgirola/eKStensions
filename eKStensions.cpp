@@ -303,36 +303,42 @@ pair<int, vector<double>> KS_test_extended_to_fitted_1D( vector<double> data, TF
 	auto time1 = high_resolution_clock::now();
 	//generate data and repeat KS test N times
 	auto myPdf = (TF1*)myPdfGen->Clone("original pdf");
+	auto myFitPdf = (TF1*)myFittedPdfTest->Clone("fit pdf");
 	for( auto & D : minimum_Dists ){	
 		//---------generate data according to myPdf------------
 		auto data1D = GenData1D( myPdf, data.size() );	
 		
-		//---------unbinned fit of the funct to the pdf---------
-		unbinnedSimpleFit(data1D, myPdfGen, origin_pars, x0, x1);
+		//---------unbinned fit of the fit funct to the data---------
+		unbinnedSimpleFit(data1D, myFitPdf, origin_pars, x0, x1);
 
 		//---------KS test for original myPdfTest------------
-		GoFTest test = GoFTest(data1D.size(), &data1D[0], *myPdfGen, GoFTest::EUserDistribution::kPDF, x0, x1);
+		GoFTest test = GoFTest(data1D.size(), &data1D[0], *myFitPdf, GoFTest::EUserDistribution::kPDF, x0, x1);
 		double t;
 		test.KolmogorovSmirnovTest(t,D); //evaluate minimum distance (KS GoF test)
 	}
+	delete myPdf;
+	delete myFitPdf;
+	//print some infos
 	auto time2 = std::chrono::high_resolution_clock::now();
 	auto duration = std::chrono::duration_cast<seconds>( time2 - time1 ).count();
 	cout<<"statistics for KS minimum distances has been generated in "<<duration<<" seconds (";
 	cout<<1000.*(double)duration/nSamples_forMC*data.size()<<" ms for one iteration)"<<endl<<endl;
+	//find minimum and maximum in the vector of minimum KS distances
 	double Min = *std::min_element(minimum_Dists.begin(), minimum_Dists.end());	
 	double Max = *std::max_element(minimum_Dists.begin(), minimum_Dists.end());	
 	auto hMinDist = new TH1D(name, name, 100, Min, Max); //prepare histogram to store the minimum distances
 	for( const auto & D : minimum_Dists )
 		hMinDist->Fill(D); //fill histogram
+	//prepare canvas and normalize histogram
 	auto myC = new TCanvas(name, name, 500, 0, 1000, 500);
 	myC->cd();
 	hMinDist->Scale(1./hMinDist->Integral());
-
+	//generate the empirical CDF from the vector of the minimum distances, this will be used to estimate the t-values by reversing it
 	auto minDistCDF = GenerateEmpiricalCDF_1D(minimum_Dists, Min, Max, "KS Distances empirical CDF");
 	minDistCDF->SetNpx(10000);
 	minDistCDF->Draw();	
 	hMinDist->Draw("same");
-
+	//store results in a pair
 	pair<TF1*, TH1*> MCresults = {minDistCDF, hMinDist};
 		
 	
@@ -383,12 +389,15 @@ pair<int, vector<double>> KS_test_extended_to_fitted_1D( vector<double> data, TF
 	return {ndf, table_row};
 }
 
+//function meant to give results (in particular t-values) meant to 
+//compare with the ones reported by original lilliefors article 
+//to check the consistency of the current implemetation
 void Lilliefors_Consistency_Test(){
 	
 	int N = 10000; //how many times repeat the test in MC simulation
 
 	//---------generate gausn data------------
-	int SampleSize = 30;
+	int SampleSize = 100;
 	double mu = 5, sigma = 2;
 	double X0 = mu - 5*sigma, X1 = mu + 5 *sigma;
 	TF1* myPdf = new TF1("myPdf", "ROOT::Math::normal_pdf(x,[1],[0])", X0, X1);
@@ -404,9 +413,7 @@ void Lilliefors_Consistency_Test(){
 
 	//----perform MC KS test----
 	auto results = KS_test_extended_to_fitted_1D(data1D, myPdf, myPdfFitted, original_pars, 2, N, X0, X1);
-
 }
-
 
 
 void eKStensions(){}
