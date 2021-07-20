@@ -277,6 +277,7 @@ void unbinnedSimpleFit(vector<double> x, TF1* myFunction, double* origin_pars, d
 
 	return;
 }
+
 //the following function implement an extension of the KS test
 //for when some of the parameters of the distribution are 
 //estimated from the data themselves.
@@ -291,7 +292,9 @@ pair<int, vector<double>> KS_test_extended_to_fitted_1D( vector<double> data, TF
 		
 	int ndf = data.size() - nFittedPars; //extension of degrees of freedom to the KS test in analogy with chi2
 
+	//-----------------------------------------------------------------------------------------------------------------
 	//1. build distribution of KS minimum distances using MC method with data generated from the estimated (fitted) pdf
+	//-----------------------------------------------------------------------------------------------------------------
 	cout<<"Running MC simulation to build corrected KS statistics..."<<endl;
 	vector<double> minimum_Dists(nSamples_forMC);
 	TString name = "Minimum KS Distances";
@@ -301,7 +304,7 @@ pair<int, vector<double>> KS_test_extended_to_fitted_1D( vector<double> data, TF
 	//generate data and repeat KS test N times
 	auto myPdf = (TF1*)myPdfGen->Clone("original pdf");
 	for( auto & D : minimum_Dists ){	
-		//---------generate data according to myPdfGen------------
+		//---------generate data according to myPdf------------
 		auto data1D = GenData1D( myPdf, data.size() );	
 		
 		//---------unbinned fit of the funct to the pdf---------
@@ -333,13 +336,17 @@ pair<int, vector<double>> KS_test_extended_to_fitted_1D( vector<double> data, TF
 	pair<TF1*, TH1*> MCresults = {minDistCDF, hMinDist};
 		
 	
+	//-----------------------------------------------------------------------------------------------------------------
 	//2. evaluate the KS distance on the original data	
+	//-----------------------------------------------------------------------------------------------------------------
 	auto test = GoFTest(data.size(), &data[0], *myFittedPdfTest, GoFTest::EUserDistribution::kPDF, x0, x1);
 	double t2, D;
 	test.KolmogorovSmirnovTest(t2,D);
 	cout<<"D = "<<D<<endl;
 	
+	//-----------------------------------------------------------------------------------------------------------------
 	//3. evaluate the t-value from the MC built distribution in two different ways for the fitted PDF
+	//-----------------------------------------------------------------------------------------------------------------
 	double X0, X1;
 	MCresults.first->GetRange(X0, X1);
 	double t_MC = MCresults.first->Eval(X1)-MCresults.first->Eval(D); //uses empirical CDF
@@ -355,7 +362,9 @@ pair<int, vector<double>> KS_test_extended_to_fitted_1D( vector<double> data, TF
 	cout<<"\t Difference between t2 from MC (est CDF) and from GoFTest theroretical values = "<<diff_t<<endl;
 	cout<<"\t Difference between t2 from MC (hist   ) and from GoFTest theroretical values = "<<diff_t_hist<<endl;
 
+	//-----------------------------------------------------------------------------------------------------------------
 	//4. build a table specific for this pdf and for this ndf
+	//-----------------------------------------------------------------------------------------------------------------
 	//   t-values: .20, .15, .10, .05, .01
 	vector<double> table_row = {.20, .15, .10, .05, .01};
 	cout<<"if the value of D exceeds the critical values in the table one rejects the hypotesis that the data are from the estimated pdf"<<endl;
@@ -376,7 +385,7 @@ pair<int, vector<double>> KS_test_extended_to_fitted_1D( vector<double> data, TF
 
 void Lilliefors_Consistency_Test(){
 	
-	int N = 100000; //how many times repeat the test in MC simulation
+	int N = 10000; //how many times repeat the test in MC simulation
 
 	//---------generate gausn data------------
 	int SampleSize = 30;
@@ -384,28 +393,17 @@ void Lilliefors_Consistency_Test(){
 	double X0 = mu - 5*sigma, X1 = mu + 5 *sigma;
 	TF1* myPdf = new TF1("myPdf", "ROOT::Math::normal_pdf(x,[1],[0])", X0, X1);
 	myPdf->SetParameters(mu,sigma);
+	double * original_pars = myPdf->GetParameters();
 	myPdf->SetNpx(10000);
 	auto data1D = GenData1D( myPdf, SampleSize );
 	PlotCDFvsEmpCDF_1D(data1D, (TF1*)myPdf->Clone("lilliefors before fit func"), "lilliefors before fit");
 	
 	//-------estimate parameters from data-------
-	double sum = std::accumulate(std::begin(data1D), std::end(data1D), 0.0);
-	double m =  sum / data1D.size();
-	double accum = 0.0;
-	std::for_each (std::begin(data1D), std::end(data1D), [&](const double d) {
-		accum += (d - m) * (d - m);
-	});
-	double stdev = sqrt(accum / (data1D.size()-1));
 	TF1* myPdfFitted = (TF1*)(myPdf->Clone("myPdfFitted"));
-	myPdfFitted->SetParameters(m, stdev);
-	cout<<"estimated mean = "<<m<<endl<<"estimated stddev = "<<stdev<<endl;
+	unbinnedSimpleFit(data1D, myPdfFitted, original_pars, X0, X1);
 
 	//----perform MC KS test----
-	double * original_pars = myPdf->GetParameters();
 	auto results = KS_test_extended_to_fitted_1D(data1D, myPdf, myPdfFitted, original_pars, 2, N, X0, X1);
-
-	//PlotCDFvsEmpCDF_1D(data1D, (TF1*)myPdf->Clone(), "lilliefors after fit");
-	
 
 }
 
