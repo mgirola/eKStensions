@@ -41,7 +41,7 @@
 //STL usage
 using std::cout, std::endl, std::to_string;
 using std::chrono::high_resolution_clock;
-using std::chrono::duration_cast;
+using std::chrono::duration;
 using std::chrono::microseconds, std::chrono::seconds, std::chrono::minutes;
 using std::vector;
 using std::string;
@@ -97,11 +97,13 @@ pair<TF1*, TH1*> MCStatistcalKS_1D( TF1* myPdfGen, TF1* myPdfTest, int nDataGen,
 
 	double xMin, xMax;
 	myPdfGen->GetRange(xMin, xMax);
-	myPdfTest->SetRange(xMin, xMax); //set the same range
+	myPdfTest->SetRange(xMin, xMax); //set the same range in the pdfs
 	vector<double> minimum_Dists(N);
 	TString name = "Minimum KS Distances";
-	auto hMinDist = new TH1D(name, name, 100, -0.0001, 0.04);
-	int i = 0;
+	cout<<"Repeating "<<N<<" KS tests, generating "<< nDataGen <<" data points each time....."<<endl;
+	if(N*nDataGen>1000*1e04) cout<<"Warning: this might take a long time............"<<endl;
+	auto t1 = high_resolution_clock::now();
+	//generate data and repeat KS test N times
 	for( auto & D : minimum_Dists ){	
 		//---------generate data according to myPdfGen------------
 		auto data1D = GenData1D( myPdfGen, nDataGen );	
@@ -109,21 +111,31 @@ pair<TF1*, TH1*> MCStatistcalKS_1D( TF1* myPdfGen, TF1* myPdfTest, int nDataGen,
 		//---------KS test for original myPdfTest------------
 		GoFTest test = GoFTest(data1D.size(), &data1D[0], *myPdfTest, GoFTest::EUserDistribution::kPDF, xMin, xMax);
 		double t;
-		test.KolmogorovSmirnovTest(t,D);
-		hMinDist->Fill(D);
-		cout<<100.*(double)(i++)/(double)N<<"\tD = "<<D<<endl;
+		test.KolmogorovSmirnovTest(t,D); //evaluate minimum distance (KS GoF test)
 	}
+	auto t2 = std::chrono::high_resolution_clock::now();
+	auto duration = std::chrono::duration_cast<seconds>( t2 - t1 ).count();
+	cout<<"statistics for KS minimum distances has been generated in "<<duration<<" seconds (";
+	cout<<1000.*(double)duration/N<<" ms for one iteration)"<<endl<<endl;
+	double Min = *std::min_element(minimum_Dists.begin(), minimum_Dists.end());	
+	double Max = *std::max_element(minimum_Dists.begin(), minimum_Dists.end());	
+	auto hMinDist = new TH1D(name, name, 100, Min, Max); //prepare histogram to store the minimum distances
+	for( const auto & D : minimum_Dists )
+		hMinDist->Fill(D); //fill histogram
 	auto myC = new TCanvas(name, name, 500, 0, 1000, 500);
 	myC->cd();
-	hMinDist->Scale(1./N);
-	hMinDist->Draw();
+	hMinDist->Scale(1./hMinDist->Integral());
 
-	//auto myC2 = new TCanvas(name+" emp CDF", name+" emp CDF", 0, 500, 500, 1000);
-	//myC2->cd();
-	auto minDistCDF = GenerateEmpiricalCDF_1D(minimum_Dists, -0.001, 0.04, "KS Distances empirical CDF");
+	//evaluate the empirical CDF of the minimum distances found in the MC simulation
+	//this will be used along with the foundamental theorem of calculus 
+	//where it will be interpreted as the primitive of the KS minimum distances distribution
+	//and it will be used to extract the t-value by evaluating the difference between [F(x_max)-F(D)]=(integral of the distrib from D to x_max)
+	//where D is the minimum distance returend by KS test and x_max should be the upper limit range such that (F(x_max)=1).
+	auto minDistCDF = GenerateEmpiricalCDF_1D(minimum_Dists, Min, Max, "KS Distances empirical CDF");
 	minDistCDF->SetNpx(10000);
-	minDistCDF->Draw("same");
-	
+	minDistCDF->Draw();	
+	hMinDist->Draw("same");
+
 	return {minDistCDF, hMinDist};
 }
 
@@ -206,16 +218,18 @@ void KSvsChi2_1D(){
 
 	//Perform MC simulation to build test statistics to compare with the theoretical t-value returned by GoFTest
 	cout<<endl<<"building test statistics of minimum KS distances from MC simulation..."<<endl;
-	int MC_generation;
-	auto MCresults = MCStatistcalKS_1D( myPdf, myPdf, nDataGen, 1000 );
-	double t2_MC = MCresults.first->Integral(D2, 10);
-	double t2_MC_hist, err = MCresults.second->IntegralAndError(MCresults.second->GetBin(D2), MCresults.second->GetNbinsX(), err);
+	int MC_generation = 1000;
+	auto MCresults = MCStatistcalKS_1D( myPdf, myPdf, nDataGen, MC_generation );
+	double X0, X1;
+	MCresults.first->GetRange(X0, X1);
+	double t2_MC = MCresults.first->Eval(X1)-MCresults.first->Eval(D2);
+	double err_t2MChist, t2_MC_hist = MCresults.second->IntegralAndError(MCresults.second->FindBin(D2), MCresults.second->FindBin(X1), err_t2MChist);
 	double diff_t2 = t2-t2_MC;
 	double diff_t2_hist = t2-t2_MC_hist;
 	cout<<"MC results: "<<endl;
 	cout<<"\t t2_MC = "<<t2_MC<<endl;
 	cout<<"\t Difference between t2 from MC and from GoFTest theroretical values = "<<diff_t2<<endl;
-	cout<<"\t t2_MC hist = "<<t2_MC_hist<<endl;
+	cout<<"\t t2_MC hist = "<<t2_MC_hist<<" +- "<<err_t2MChist<<endl;
 	cout<<"\t Difference between t2 from MC and from GoFTest theroretical values = "<<diff_t2_hist<<endl;
 	cout<<"MC statistics completed"<<endl<<endl;
 
