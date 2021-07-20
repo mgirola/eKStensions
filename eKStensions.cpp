@@ -17,6 +17,7 @@
 #include <ctime> //std::time
 #include <algorithm>
 #include <utility>
+#include <numeric> //std::accumulate
 
 //ROOT libraries
 #include <TRandom3.h>
@@ -77,12 +78,13 @@ TF1* GenerateEmpiricalCDF_1D( vector<double> data, double x0, double x1, TString
 void PlotCDFvsEmpCDF_1D(vector<double> data, TF1* myPdf, TString name = "CDF vs Data"){
 	auto myC = new TCanvas(name, name, 0, 0, 500, 500);
 	myC->cd();
-	myPdf->SetLineColor(kBlue);
+	TF1* myPdf1 = (TF1*)myPdf->Clone("integral "+name);
+	myPdf1->SetLineColor(kBlue);
 	myC->SetGridx(); myC->SetGridy();
-	myPdf->DrawIntegral();
+	myPdf1->DrawIntegral();
 	double xMin, xMax;
-	myPdf->GetRange(xMin,xMax);
-	auto EmpCDF = GenerateEmpiricalCDF_1D(data, xMin, xMax, "Empirical CDF");
+	myPdf1->GetRange(xMin,xMax);
+	auto EmpCDF = GenerateEmpiricalCDF_1D(data, xMin, xMax, name+" Empirical CDF");
 	EmpCDF->SetNpx(1000);
 	EmpCDF->SetLineColor(kRed);
 	EmpCDF->Draw("same");
@@ -142,7 +144,7 @@ pair<TF1*, TH1*> MCStatistcalKS_1D( TF1* myPdfGen, TF1* myPdfTest, int nDataGen,
 //the following function implements a case where chi2 behaves differently from KS.
 //It is a simple example where fitted function chi2 accepts hypotesis while KS rejects it
 //It uses GoFTest in the ROOT toolkit to evaluate 1D KS
-void KSvsChi2_1D(){
+void Example_KSvsChi2_1D(){
 	cout<<"Running test KS versus chi2..."<<endl;
 
 	//---------generate data------------
@@ -232,6 +234,97 @@ void KSvsChi2_1D(){
 	cout<<"\t t2_MC hist = "<<t2_MC_hist<<" +- "<<err_t2MChist<<endl;
 	cout<<"\t Difference between t2 from MC and from GoFTest theroretical values = "<<diff_t2_hist<<endl;
 	cout<<"MC statistics completed"<<endl<<endl;
+}
+
+//the following function implement an extension of the KS test
+//for when some of the parameters of the distribution are 
+//estimated from the data themselves.
+//According to various references this test makes sense only if
+//the estimated parameters are parameters of scale or location.
+//When the data follows a normal distribution but
+//the mean and the sigma are estimated from the data
+//we are in the special case known in literature
+//as the Lilliefors Test, that we can use to check for consistency.
+pair<int, vector<double>> KS_test_extended_to_fitted_1D( vector<double> data, TF1* myFittedPdfTest, int nFittedPars, double nSamples_forMC, double x0, double x1 ){
+	cout<<"performing KS test extendended to fitted 1D data..."<<endl;
+		
+	int ndf = data.size() - nFittedPars; //extension of degrees of freedom to the KS test in analogy with chi2
+
+	//1. build distribution of KS minimum distances using MC method with data generated from the estimated (fitted) pdf
+	//FIXME auto MCresults = MCStatistcalKS_1D( myFittedPdfTest, (TF1*)myFittedPdfTest->Clone(), data.size(), nSamples_forMC );
+		
+	
+	//2. evaluate the KS distance on the original data	
+	auto test = GoFTest(data.size(), &data[0], *myFittedPdfTest, GoFTest::EUserDistribution::kPDF, x0, x1);
+	double t2, D;
+	test.KolmogorovSmirnovTest(t2,D);
+	cout<<"D = "<<D<<endl;
+	
+	//3. evaluate the t-value from the MC built distribution in two different ways for the fitted PDF
+	double X0, X1;
+	MCresults.first->GetRange(X0, X1);
+	double t_MC = MCresults.first->Eval(X1)-MCresults.first->Eval(D); //uses empirical CDF
+	double err_tMChist, t_MC_hist = MCresults.second->IntegralAndError(MCresults.second->FindBin(D), MCresults.second->FindBin(X1), err_tMChist); //groups data in histogram
+	double diff_t = t2-t_MC;
+	double diff_t_hist = t2-t_MC_hist;
+	cout<<"GoFTest t results: "<<endl;
+	cout<<"\t t = "<<t2<<endl;
+	cout<<"MC results: "<<endl;
+	cout<<"\t t2_MC = "<<t_MC<<endl;
+	cout<<"\t t2_MC hist = "<<t_MC_hist<<" +- "<<err_tMChist<<endl;
+	cout<<"Difference between the two:"<<endl;
+	cout<<"\t Difference between t2 from MC (est CDF) and from GoFTest theroretical values = "<<diff_t<<endl;
+	cout<<"\t Difference between t2 from MC (hist   ) and from GoFTest theroretical values = "<<diff_t_hist<<endl;
+
+	//4. build a table specific for this pdf and for this ndf
+	//   t-values: .20, .15, .10, .05, .01
+	vector<double> table_row = {.20, .15, .10, .05, .01};
+	cout<<"if the value of D exceeds the critical values in the table one rejects the hypotesis that the data are from the estimated pdf"<<endl;
+	cout<<"in other words, any value of D larger than the ones indicated in the table is significant at the indicated level of significance"<<endl;
+	cout<<"in other words, for a fixed value of D, bigger t-values are better in the sense that they indicate better agreement with the data"<<endl;
+	cout<<"ndf = "<<ndf<<" "; PRINTCONTAINER(table_row);
+	for( auto & val : table_row ){
+		//have to find the D corresponding to val and substiute val with it
+		auto myF = MCresults.first;
+		auto sup = myF->Eval(X1);
+		auto y = 1 - val;
+		val = myF->GetX(y); //let do the inversion to ROOT and hope it works
+	}
+	cout<<"ndf = "<<ndf<<" "; PRINTCONTAINER(table_row);
+	cout<<endl<<"completed KS test extendended to fitted 1D data..."<<endl;
+	return {ndf, table_row};
+}
+
+void Lilliefors_Consistency_Test(){
+	
+	int N = 10000; //how many times repeat the test in MC simulation
+
+	//---------generate gausn data------------
+	int SampleSize = 10;
+	double norm = 1, mu = 2, sigma = 1;
+	double X0 = mu - 5*sigma, X1 = mu + 5 *sigma;
+	TF1* myPdf = new TF1("myPdf", "gausn", X0, X1);
+	myPdf->SetParameters(norm,mu,sigma);
+	myPdf->SetNpx(10000);
+	auto data1D = GenData1D( myPdf, SampleSize );
+	PlotCDFvsEmpCDF_1D(data1D, myPdf, "lilliefors before fit");
+	
+	//-------estimate parameters from data-------
+	double sum = std::accumulate(std::begin(data1D), std::end(data1D), 0.0);
+	double m =  sum / data1D.size();
+	double accum = 0.0;
+	std::for_each (std::begin(data1D), std::end(data1D), [&](const double d) {
+		accum += (d - m) * (d - m);
+	});
+	double stdev = sqrt(accum / (data1D.size()-1));
+	myPdf->SetParameters(norm, m, stdev);
+	cout<<"estimated mean = "<<m<<endl<<"estimated stddev = "<<stdev<<endl;
+
+	//----perform MC KS test----
+	auto results = KS_test_extended_to_fitted_1D(data1D, myPdf, 2, N, X0, X1);
+
+	//PlotCDFvsEmpCDF_1D(data1D, myPdf, "lilliefors after fit");
+	
 
 }
 
@@ -243,7 +336,8 @@ int main(){
 	gStyle->SetOptFit(111111);
 	auto myApp = new TApplication("myApp", NULL, NULL);
 	
-	KSvsChi2_1D();
+	//Example_KSvsChi2_1D();
+	Lilliefors_Consistency_Test();
 	
 	eKStensions();
 	myApp->Run();
