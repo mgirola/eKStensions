@@ -303,21 +303,19 @@ pair<int, vector<double>> KS_test_extended_to_fitted_1D( vector<double> data, TF
 	auto time1 = high_resolution_clock::now();
 	//generate data and repeat KS test N times
 	auto myPdf = (TF1*)myPdfGen->Clone("original pdf");
-	auto myFitPdf = (TF1*)myFittedPdfTest->Clone("fit pdf");
 	for( auto & D : minimum_Dists ){	
 		//---------generate data according to myPdf------------
-		auto data1D = GenData1D( myPdf, data.size() );	
+		auto data1D = GenData1D( myPdfGen, data.size() );	
 		
 		//---------unbinned fit of the fit funct to the data---------
-		unbinnedSimpleFit(data1D, myFitPdf, origin_pars, x0, x1);
+		unbinnedSimpleFit(data1D, myPdf, origin_pars, x0, x1);
 
-		//---------KS test for original myPdfTest------------
-		GoFTest test = GoFTest(data1D.size(), &data1D[0], *myFitPdf, GoFTest::EUserDistribution::kPDF, x0, x1);
+		//---------KS test for original myPdfGen ------------
+		GoFTest test = GoFTest(data1D.size(), &data1D[0], *myPdf, GoFTest::EUserDistribution::kPDF, x0, x1);
 		double t;
 		test.KolmogorovSmirnovTest(t,D); //evaluate minimum distance (KS GoF test)
 	}
 	delete myPdf;
-	delete myFitPdf;
 	//print some infos
 	auto time2 = std::chrono::high_resolution_clock::now();
 	auto duration = std::chrono::duration_cast<seconds>( time2 - time1 ).count();
@@ -392,12 +390,9 @@ pair<int, vector<double>> KS_test_extended_to_fitted_1D( vector<double> data, TF
 //function meant to give results (in particular t-values) meant to 
 //compare with the ones reported by original lilliefors article 
 //to check the consistency of the current implemetation
-void Lilliefors_Consistency_Test(){
-	
-	int N = 10000; //how many times repeat the test in MC simulation
+void Lilliefors_Consistency_Test( int N = 1e04, int SampleSize = 10 ){
 
 	//---------generate gausn data------------
-	int SampleSize = 100;
 	double mu = 5, sigma = 2;
 	double X0 = mu - 5*sigma, X1 = mu + 5 *sigma;
 	TF1* myPdf = new TF1("myPdf", "ROOT::Math::normal_pdf(x,[1],[0])", X0, X1);
@@ -405,7 +400,7 @@ void Lilliefors_Consistency_Test(){
 	double * original_pars = myPdf->GetParameters();
 	myPdf->SetNpx(10000);
 	auto data1D = GenData1D( myPdf, SampleSize );
-	PlotCDFvsEmpCDF_1D(data1D, (TF1*)myPdf->Clone("lilliefors before fit func"), "lilliefors before fit");
+	//PlotCDFvsEmpCDF_1D(data1D, (TF1*)myPdf->Clone("lilliefors before fit func"), "lilliefors before fit");
 	
 	//-------estimate parameters from data-------
 	TF1* myPdfFitted = (TF1*)(myPdf->Clone("myPdfFitted"));
@@ -415,16 +410,46 @@ void Lilliefors_Consistency_Test(){
 	auto results = KS_test_extended_to_fitted_1D(data1D, myPdf, myPdfFitted, original_pars, 2, N, X0, X1);
 }
 
+void Extended_Lilliefors_Test( int N = 1e04, int SampleSize = 10 ){
+	
+	//---------generate gausn data------------
+	double mu = 5, sigma = 2;
+	double X0 = mu - 5*sigma, X1 = mu + 5 *sigma;
+	double bkg = 0.01;
+	TF1* myPdf = new TF1("myPdf", "ROOT::Math::normal_pdf(x,[1],[0])", X0, X1);
+	TF1* myPdfGen = new TF1("myPdfFit", "ROOT::Math::normal_pdf(x,[1],[0])+[2]*(1.+(1./3.)*sin(2*x))", X0, X1);
+	myPdf->SetParameters(mu,sigma);
+	myPdfGen->SetParameters(mu, sigma, bkg);
+	myPdfGen->SetLineColor(kBlue);
+	myPdfGen->Draw();
+	myPdf->Draw("same");
+	double * original_pars = myPdf->GetParameters();
+	myPdf->SetNpx(10000);
+	
+	//generate data according to custom pdf
+	auto data1D = GenData1D( myPdfGen, SampleSize );
+	//PlotCDFvsEmpCDF_1D(data1D, (TF1*)myPdf->Clone("lil before fit func"), "lil before fit");
+	
+	//-------estimate parameters from data-------
+	//fit data with normal pdf (which should not agree with the generated data)
+	TF1* myPdfFitted = (TF1*)(myPdf->Clone("myPdfFitted")); //fit data with the wrong pdf
+	unbinnedSimpleFit(data1D, myPdfFitted, original_pars, X0, X1);
+	
+	//----perform MC KS test with normal pdf----
+	auto results = KS_test_extended_to_fitted_1D(data1D, myPdf, myPdfFitted, original_pars, 2, N, X0, X1);
+}
 
 void eKStensions(){}
 
 int main(){
 	gStyle->SetOptFit(111111);
 	auto myApp = new TApplication("myApp", NULL, NULL);
-	
+
 	//Example_KSvsChi2_1D();
-	Lilliefors_Consistency_Test();
-	
+	int N = 1e04, SampleSize = 10;
+	//Lilliefors_Consistency_Test(N, SampleSize);
+	Extended_Lilliefors_Test(N, SampleSize);
+
 	eKStensions();
 	myApp->Run();
 	return 0;
