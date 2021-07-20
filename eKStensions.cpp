@@ -36,6 +36,26 @@
 #include <TH2.h>
 #include <TSystem.h>
 #include <Math/GoFTest.h>
+// For Fitting
+#include "Fit/Fitter.h"
+#include "Fit/BinData.h"
+#include "Fit/UnBinData.h"
+#include "Fit/Chi2FCN.h"
+#include "Fit/FitResult.h"
+#include "Fit/DataOptions.h"
+#include "Fit/FitConfig.h"
+
+
+// For defining the functions
+#include "TList.h"
+#include "Math/WrappedMultiTF1.h"
+#include "HFitInterface.h"
+
+// For plotting
+#include "TROOT.h"
+#include "TSystem.h"
+#include "TFile.h"
+
 
 #define PRINTCONTAINER(x) std::cout<<"{ "; for(const auto &el : x ) std::cout<<el<<", "; std::cout<<" }"<<std::endl
 
@@ -94,6 +114,7 @@ void PlotCDFvsEmpCDF_1D(vector<double> data, TF1* myPdf, TString name = "CDF vs 
 
 //1D implementation of MC simulation to generate
 //the distribution of the minimum distances
+//meant to be used for pdf indipendent from the data
 pair<TF1*, TH1*> MCStatistcalKS_1D( TF1* myPdfGen, TF1* myPdfTest, int nDataGen, int N ){
 	cout<<"Running MC simulation to build KS statistics..."<<endl;
 
@@ -235,7 +256,27 @@ void Example_KSvsChi2_1D(){
 	cout<<"\t Difference between t2 from MC and from GoFTest theroretical values = "<<diff_t2_hist<<endl;
 	cout<<"MC statistics completed"<<endl<<endl;
 }
+void unbinnedSimpleFit(vector<double> x, TF1* myFunction, double* origin_pars, double xMin, double xMax){
+	gROOT->Reset();
+	ROOT::Fit::DataOptions opt;
+	ROOT::Fit::DataRange range(xMin,xMax); 
+	ROOT::Fit::UnBinData data(opt, range, x.size());
+  	for( auto it:x )
+    		data.Add(it);
+	ROOT::Math::WrappedMultiTF1 fitFunction( *myFunction, myFunction->GetNdim() );
+	ROOT::Fit::Fitter fitter;
+	fitter.SetFunction( fitFunction, false );
+	double* initialParams = origin_pars;
+	fitter.Config().SetParamsSettings(myFunction->GetNpar(),initialParams);
+	fitter.Config().SetUpdateAfterFit();
 
+	fitter.LikelihoodFit(data); //unbinned likelihood fit
+
+	//ROOT::Fit::FitResult r=fitter.Result();
+	//r.Print(std::cout);
+
+	return;
+}
 //the following function implement an extension of the KS test
 //for when some of the parameters of the distribution are 
 //estimated from the data themselves.
@@ -245,13 +286,51 @@ void Example_KSvsChi2_1D(){
 //the mean and the sigma are estimated from the data
 //we are in the special case known in literature
 //as the Lilliefors Test, that we can use to check for consistency.
-pair<int, vector<double>> KS_test_extended_to_fitted_1D( vector<double> data, TF1* myFittedPdfTest, int nFittedPars, double nSamples_forMC, double x0, double x1 ){
+pair<int, vector<double>> KS_test_extended_to_fitted_1D( vector<double> data, TF1* myPdfGen, TF1* myFittedPdfTest, double* origin_pars, int nFittedPars, double nSamples_forMC, double x0, double x1 ){
 	cout<<"performing KS test extendended to fitted 1D data..."<<endl;
 		
 	int ndf = data.size() - nFittedPars; //extension of degrees of freedom to the KS test in analogy with chi2
 
 	//1. build distribution of KS minimum distances using MC method with data generated from the estimated (fitted) pdf
-	//FIXME auto MCresults = MCStatistcalKS_1D( myFittedPdfTest, (TF1*)myFittedPdfTest->Clone(), data.size(), nSamples_forMC );
+	cout<<"Running MC simulation to build corrected KS statistics..."<<endl;
+	vector<double> minimum_Dists(nSamples_forMC);
+	TString name = "Minimum KS Distances";
+	cout<<"Repeating "<<nSamples_forMC<<" KS tests, generating "<< data.size() <<" data points each time....."<<endl;
+	if(nSamples_forMC*data.size()>10000*30) cout<<"Warning: this might take a long time............"<<endl;
+	auto time1 = high_resolution_clock::now();
+	//generate data and repeat KS test N times
+	auto myPdf = (TF1*)myPdfGen->Clone("original pdf");
+	for( auto & D : minimum_Dists ){	
+		//---------generate data according to myPdfGen------------
+		auto data1D = GenData1D( myPdf, data.size() );	
+		
+		//---------unbinned fit of the funct to the pdf---------
+		unbinnedSimpleFit(data1D, myPdfGen, origin_pars, x0, x1);
+
+		//---------KS test for original myPdfTest------------
+		GoFTest test = GoFTest(data1D.size(), &data1D[0], *myPdfGen, GoFTest::EUserDistribution::kPDF, x0, x1);
+		double t;
+		test.KolmogorovSmirnovTest(t,D); //evaluate minimum distance (KS GoF test)
+	}
+	auto time2 = std::chrono::high_resolution_clock::now();
+	auto duration = std::chrono::duration_cast<seconds>( time2 - time1 ).count();
+	cout<<"statistics for KS minimum distances has been generated in "<<duration<<" seconds (";
+	cout<<1000.*(double)duration/nSamples_forMC*data.size()<<" ms for one iteration)"<<endl<<endl;
+	double Min = *std::min_element(minimum_Dists.begin(), minimum_Dists.end());	
+	double Max = *std::max_element(minimum_Dists.begin(), minimum_Dists.end());	
+	auto hMinDist = new TH1D(name, name, 100, Min, Max); //prepare histogram to store the minimum distances
+	for( const auto & D : minimum_Dists )
+		hMinDist->Fill(D); //fill histogram
+	auto myC = new TCanvas(name, name, 500, 0, 1000, 500);
+	myC->cd();
+	hMinDist->Scale(1./hMinDist->Integral());
+
+	auto minDistCDF = GenerateEmpiricalCDF_1D(minimum_Dists, Min, Max, "KS Distances empirical CDF");
+	minDistCDF->SetNpx(10000);
+	minDistCDF->Draw();	
+	hMinDist->Draw("same");
+
+	pair<TF1*, TH1*> MCresults = {minDistCDF, hMinDist};
 		
 	
 	//2. evaluate the KS distance on the original data	
@@ -287,7 +366,7 @@ pair<int, vector<double>> KS_test_extended_to_fitted_1D( vector<double> data, TF
 		//have to find the D corresponding to val and substiute val with it
 		auto myF = MCresults.first;
 		auto sup = myF->Eval(X1);
-		auto y = 1 - val;
+		auto y = sup - val;
 		val = myF->GetX(y); //let do the inversion to ROOT and hope it works
 	}
 	cout<<"ndf = "<<ndf<<" "; PRINTCONTAINER(table_row);
@@ -297,17 +376,17 @@ pair<int, vector<double>> KS_test_extended_to_fitted_1D( vector<double> data, TF
 
 void Lilliefors_Consistency_Test(){
 	
-	int N = 10000; //how many times repeat the test in MC simulation
+	int N = 100000; //how many times repeat the test in MC simulation
 
 	//---------generate gausn data------------
-	int SampleSize = 10;
-	double norm = 1, mu = 2, sigma = 1;
+	int SampleSize = 30;
+	double mu = 5, sigma = 2;
 	double X0 = mu - 5*sigma, X1 = mu + 5 *sigma;
-	TF1* myPdf = new TF1("myPdf", "gausn", X0, X1);
-	myPdf->SetParameters(norm,mu,sigma);
+	TF1* myPdf = new TF1("myPdf", "ROOT::Math::normal_pdf(x,[1],[0])", X0, X1);
+	myPdf->SetParameters(mu,sigma);
 	myPdf->SetNpx(10000);
 	auto data1D = GenData1D( myPdf, SampleSize );
-	PlotCDFvsEmpCDF_1D(data1D, myPdf, "lilliefors before fit");
+	PlotCDFvsEmpCDF_1D(data1D, (TF1*)myPdf->Clone("lilliefors before fit func"), "lilliefors before fit");
 	
 	//-------estimate parameters from data-------
 	double sum = std::accumulate(std::begin(data1D), std::end(data1D), 0.0);
@@ -317,13 +396,15 @@ void Lilliefors_Consistency_Test(){
 		accum += (d - m) * (d - m);
 	});
 	double stdev = sqrt(accum / (data1D.size()-1));
-	myPdf->SetParameters(norm, m, stdev);
+	TF1* myPdfFitted = (TF1*)(myPdf->Clone("myPdfFitted"));
+	myPdfFitted->SetParameters(m, stdev);
 	cout<<"estimated mean = "<<m<<endl<<"estimated stddev = "<<stdev<<endl;
 
 	//----perform MC KS test----
-	auto results = KS_test_extended_to_fitted_1D(data1D, myPdf, 2, N, X0, X1);
+	double * original_pars = myPdf->GetParameters();
+	auto results = KS_test_extended_to_fitted_1D(data1D, myPdf, myPdfFitted, original_pars, 2, N, X0, X1);
 
-	//PlotCDFvsEmpCDF_1D(data1D, myPdf, "lilliefors after fit");
+	//PlotCDFvsEmpCDF_1D(data1D, (TF1*)myPdf->Clone(), "lilliefors after fit");
 	
 
 }
