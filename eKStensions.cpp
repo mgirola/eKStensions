@@ -75,9 +75,27 @@ using ROOT::Math::GoFTest;
 vector<double> GenData1D( TF1* pdf, int N ){
 	auto ran_gen = new TRandom3();
 	ran_gen->SetSeed();
+	if(pdf->GetNpx()<5000) pdf->SetNpx(5000);
 	vector<double> data(N);
 	for( double &el: data )
 		el = pdf->GetRandom(ran_gen);
+	delete ran_gen;
+	return data;
+}
+
+//simple funct to extract from 2d pdf
+vector<pair<double,double>> GenData2D( TF2* pdf, int N ){
+	auto ran_gen = new TRandom3();
+	ran_gen->SetSeed();
+	pdf->SetNpx(1000);
+	pdf->SetNpy(1000);
+	vector<pair<double,double>> data(N);
+	double x,y;
+	for( pair<double,double> &el : data ){
+		pdf->GetRandom2(x,y,ran_gen);
+		el = {x,y};
+	}
+	delete ran_gen;
 	return data;
 }
 
@@ -293,7 +311,7 @@ pair<int, vector<double>> KS_test_extended_to_fitted_1D( vector<double> data, TF
 	int ndf = data.size() - nFittedPars; //extension of degrees of freedom to the KS test in analogy with chi2
 
 	//-----------------------------------------------------------------------------------------------------------------
-	//1. build distribution of KS minimum distances using MC method with data generated from the estimated (fitted) pdf
+	//1. build distribution of KS minimum distances using MC method with data following the (true) myPdfGen PDF
 	//-----------------------------------------------------------------------------------------------------------------
 	cout<<"Running MC simulation to build corrected KS statistics..."<<endl;
 	vector<double> minimum_Dists(nSamples_forMC);
@@ -341,7 +359,7 @@ pair<int, vector<double>> KS_test_extended_to_fitted_1D( vector<double> data, TF
 		
 	
 	//-----------------------------------------------------------------------------------------------------------------
-	//2. evaluate the KS distance on the original data	
+	//2. evaluate the KS distance on the original data fitted with the (possibly wrong) pdf	
 	//-----------------------------------------------------------------------------------------------------------------
 	auto test = GoFTest(data.size(), &data[0], *myFittedPdfTest, GoFTest::EUserDistribution::kPDF, x0, x1);
 	double t2, D;
@@ -349,7 +367,7 @@ pair<int, vector<double>> KS_test_extended_to_fitted_1D( vector<double> data, TF
 	cout<<"D = "<<D<<endl;
 	
 	//-----------------------------------------------------------------------------------------------------------------
-	//3. evaluate the t-value from the MC built distribution in two different ways for the fitted PDF
+	//3. evaluate the t-value from the MC built distribution in two different ways for the original pdf
 	//-----------------------------------------------------------------------------------------------------------------
 	double X0, X1;
 	MCresults.first->GetRange(X0, X1);
@@ -439,6 +457,41 @@ void Extended_Lilliefors_Test( int N = 1e04, int SampleSize = 10 ){
 	auto results = KS_test_extended_to_fitted_1D(data1D, myPdf, myPdfFitted, original_pars, 2, N, X0, X1);
 }
 
+//extension of the KS test to 2 dimensions
+//in this function there is no fit of the data
+//we just generate data according to a 2D distribution
+//and we use KS test to establish agreement
+void KS_Test2D(int SampleSize = 50){
+	//prepare data
+	double muX = -4, muY = +3;
+	double sigmaX = 2, sigmaY = 2.8;
+	double rho = 0.8; //correlation btw -1 and 1
+	double x0, y0, x1, y1;
+	x0 = std::max( abs(std::max(muX+5*sigmaX,muY+5*sigmaY)), abs(std::min(muX-5*sigmaX,muY-5*sigmaY)) );
+	y0 = -x0; x1 = x0; y1 = x0; x0 = -x0;
+	TF2* myPdfGen = new TF2("myPdfGen", "ROOT::Math::bigaussian_pdf(x,y,[0],[1],[2],[3],[4])", x0, x1, y0, y1);
+	myPdfGen->SetParameters(sigmaX, sigmaY, rho, muX, muY);
+	auto data = GenData2D(myPdfGen, SampleSize);
+	TH2D* h1 = new TH2D("h1","h1",1000,x0,x1,1000,y0,y1);
+	for( const auto & p : data )
+		h1->Fill(p.first, p.second);
+	
+	vector<double> epss = {0, .0001, .001, .01, .05, .08, .1, .15, .2, .25, .3, .35, .4, .45, .5, .55, .6, .66, .7, .75, .8, .9, 1 };
+	vector<double> ts = epss;
+	for( auto & eps : ts ){
+		TF2 myPdf = TF2("myPdfModified", "ROOT::Math::bigaussian_pdf(x,y,[0],[1],[2],[3],[4])", x0, x1, y0, y1);
+		myPdf.SetParameters(sigmaX-eps, sigmaY-eps, rho, muX+eps, muY-eps);
+		TH2D h2 = TH2D("h2","h2",1000,x0,x1,1000,y0,y1);
+		h2.FillRandom("myPdfModified",1e07);
+		
+		double t = h1->KolmogorovTest(&h2,"D");
+		eps = t;
+	}
+	auto myG = new TGraph(epss.size(), &epss[0], &ts[0]);
+	myG->SetMarkerStyle();
+	myG->Draw();
+}
+
 void eKStensions(){}
 
 int main(){
@@ -448,7 +501,9 @@ int main(){
 	//Example_KSvsChi2_1D();
 	int N = 1e04, SampleSize = 10;
 	//Lilliefors_Consistency_Test(N, SampleSize);
-	Extended_Lilliefors_Test(N, SampleSize);
+	//Extended_Lilliefors_Test(N, SampleSize);
+
+	KS_Test2D();
 
 	eKStensions();
 	myApp->Run();
