@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <utility>
 #include <numeric> //std::accumulate
+#include <tuple>
 
 //ROOT libraries
 #include <TRandom3.h>
@@ -68,6 +69,7 @@ using std::vector;
 using std::string;
 using std::setw, std::setprecision;
 using std::pair;
+using std::tuple;
 using ROOT::Math::GoFTest;
 
 //simple function to extract data from PDF
@@ -112,6 +114,36 @@ TF1* GenerateEmpiricalCDF_1D( vector<double> data, double x0, double x1, TString
 	return new TF1( name, EmpFunc,  x0, x1, 0 );
 }
 
+double QKS( double lambda, int trunc ){
+	double sum = 0;
+	for( int i = 1; i<trunc; i++ )
+		sum += pow(-1,i-1)*exp(-2.*pow((double)i*lambda,2));
+	return 2*sum;
+}
+
+
+TF1 QKS_func( double lambda_coeff, int trunc, double xMin, double xMax ){
+	return TF1("QKS",[trunc,lambda_coeff](double * x, double * p){
+				return QKS(lambda_coeff*x[0],trunc);
+			},xMin,xMax,0);
+}
+
+double correlationCoefficient(vector<pair<double,double>> data){
+    int sum_X = 0, sum_Y = 0, sum_XY = 0;
+    int squareSum_X = 0, squareSum_Y = 0;
+    for (const auto & p : data){
+	double X = p.first, Y = p.second;
+        sum_X += X;
+        sum_Y += Y;
+        sum_XY += X * Y;
+        squareSum_X += X * X;
+        squareSum_Y += Y * Y;
+    }
+    // use formula for calculating correlation coefficient.
+    int n = data.size();
+    double corr = (double)(n * sum_XY - sum_X * sum_Y) / sqrt((n * squareSum_X - sum_X * sum_X) * (n * squareSum_Y - sum_Y * sum_Y));
+    return corr;
+}
 //just a funtion to plot the CDF and the empirical CDF on the same canvas
 void PlotCDFvsEmpCDF_1D(vector<double> data, TF1* myPdf, TString name = "CDF vs Data"){
 	auto myC = new TCanvas(name, name, 0, 0, 500, 500);
@@ -457,11 +489,11 @@ void Extended_Lilliefors_Test( int N = 1e04, int SampleSize = 10 ){
 	auto results = KS_test_extended_to_fitted_1D(data1D, myPdf, myPdfFitted, original_pars, 2, N, X0, X1);
 }
 
-//extension of the KS test to 2 dimensions
+//extension of the KS test to 2 dimensions based on ROOT method
 //in this function there is no fit of the data
 //we just generate data according to a 2D distribution
 //and we use KS test to establish agreement
-void KS_Test2D(int SampleSize = 50){
+void KS_Test2D_ROOT(int SampleSize = 50){
 	//prepare data
 	double muX = -4, muY = +3;
 	double sigmaX = 2, sigmaY = 2.8;
@@ -488,8 +520,211 @@ void KS_Test2D(int SampleSize = 50){
 		eps = t;
 	}
 	auto myG = new TGraph(epss.size(), &epss[0], &ts[0]);
-	myG->SetMarkerStyle();
+	myG->SetMarkerStyle(20);
 	myG->Draw();
+}
+
+//function to estimate the maximum distance from TF2 and 2D data in a customized way
+//for each point in the dataset we divide the domain in four quadrants and we 
+//evaluate the fraction of points in each quadrant and the integral of the function in each quadrant
+//then we find the distances between each fraction and we take the maximum distance
+double KolmogorovSmirnovDistance2DCustom(TF2 myPdf, vector<pair<double,double>> data){
+	double xmin, xmax, ymin, ymax;
+	myPdf.GetRange( xmin, ymin, xmax, ymax );
+	double x, y;
+	double pdfNorm = myPdf.Integral(xmin,xmax,ymin,ymax);
+	double nData = (double)data.size();
+	double f1=0,f2=0,f3=0,f4=0; //fraction func in the four quadrants
+	double d1=0,d2=0,d3=0,d4=0; //fraction points in the four quadrants
+	double D1=0,D2=0,D3=0,D4=0;
+	vector<double> Dmaxs;
+	for( const auto & p : data ){
+		x = p.first; y = p.second;
+		if( x<xmin || x>xmax || y<ymin || y>ymax ) 
+			throw std::runtime_error("values out of range");
+		
+		//frazione dati nei quattro quadranti
+		for( const auto & P : data ){
+			double X = P.first, Y = P.second;
+			if( X==x, Y == y )
+				continue;
+			else if( X>x && Y>y )
+				d1 += 1.;
+			else if( X<x && Y>y )
+				d2 += 1.;
+			else if( X<x && Y<y )
+				d3 += 1.;
+			else if( X>x && Y<y )
+				d4 += 1.;
+		}
+		d1 /= nData;
+		d2 /= nData;
+		d3 /= nData;
+		d4 /= nData;
+		
+		//frazione funzione nei quattro quadranti
+		f1 = myPdf.Integral(x,xmax,y,ymax)/pdfNorm;
+		f2 = myPdf.Integral(xmin,x,y,ymax)/pdfNorm;
+		f3 = myPdf.Integral(xmin,x,ymin,y)/pdfNorm;
+		f4 = myPdf.Integral(x,xmax,ymin,y)/pdfNorm;
+		
+		//distanze
+		D1 = abs(d1-f1);
+		D2 = abs(d2-f2);
+		D3 = abs(d3-f3);
+		D4 = abs(d4-f4);
+
+		//find maximum distance of the four 
+		double max12 = D1 > D2 ? D1 : D2;
+		double max34 = D3 > D4 ? D3 : D4;
+		double maxD = max12 > max34 ? max12 : max34;
+
+		Dmaxs.push_back(maxD);
+	}
+
+	return *std::max_element(Dmaxs.begin(), Dmaxs.end());	
+}
+
+//generate MC CDF distribution of KS statistics
+//returns CDF meant to be used to extract t-value for a certain D
+pair<TF1*,TH1*> MC_CDFfor2DCustom( TF2 myPdf, int SampleSize, int N ){
+	cout<<"Running MC simulation for 2D with "<<N<<" iterations and "<<SampleSize<<" data in each sample...."<<endl; 
+	vector<double> Ds(N);
+	int ii = 0;
+	for( auto & D : Ds ){
+		cout<<ii++<<endl;
+		auto data = GenData2D(&myPdf, SampleSize); //gen data with following myPdf
+		D = KolmogorovSmirnovDistance2DCustom(myPdf,data); //find D under for data generated from myPdf
+	}
+	double minD = *std::min_element(Ds.begin(), Ds.end());
+	double maxD = *std::max_element(Ds.begin(), Ds.end());
+	auto KolmCDF2D = GenerateEmpiricalCDF_1D(Ds,minD,maxD,"empiricalCDF2D");
+	KolmCDF2D->SetNpx(10000);
+	auto KolmCDF2DCompl = new TF1("2DQKS_MC",[KolmCDF2D](double*x, double *p){return 1.-KolmCDF2D->Eval(x[0]);},minD,maxD,0);
+
+	TString name = "HistoMinDist2D";
+	auto hMinDist = new TH1D(name, name, 100, minD, maxD); //prepare histogram to store the minimum distances
+	for( const auto & D : Ds )
+		hMinDist->Fill(D); //fill histogram
+	hMinDist->Scale(1./hMinDist->Integral());
+	//store results in a pair
+	cout<<"MC simulation 2D completed"<<endl;
+	pair<TF1*, TH1*> MCresults = {KolmCDF2DCompl, hMinDist};
+	return MCresults;
+}
+
+
+
+tuple<double,double,double> KolmogorovSmirnov2DCustom( TF2 myPdf, vector<pair<double,double>> data, TString drawOpt = "draw" ){
+	
+	int SampleSize = data.size();
+
+	//MC based evaluation of t-value
+	static bool AlreadyExecuted = false, AlreadyDrawn = false;
+	static pair<TF1*, TH1*> MCresults;
+	TF1* myFunc;
+	if ( not AlreadyExecuted ){
+		int N_MC = 100;
+		MCresults = MC_CDFfor2DCustom(*((TF2*)(myPdf.Clone("myPdfTest"))),SampleSize,N_MC);
+		AlreadyExecuted = true;
+	}else
+		cout<<"Warning, already executed, using old statistics, ensure you have not changed myPdf since the first run"<<endl;
+	
+	//Theoretical QKS in 2D case:
+	double rho = correlationCoefficient(data);
+	cout<<"rho used: "<<rho<<endl<<"estimated rho = "<<correlationCoefficient(data)<<" rho from bigaussian pdf = "<<myPdf.GetParameter(2)<<endl;
+	double lambda_coeff = sqrt(SampleSize)/(1.+sqrt(1.-(pow(rho,2)*(0.25-0.75/sqrt(SampleSize)))));
+	int trunc = 1000;
+	double DminRange, DmaxRange;
+	MCresults.first->GetRange(DminRange,DmaxRange);
+	auto QKSf = (TF1*)(QKS_func(lambda_coeff, trunc,DminRange,DmaxRange).Clone("theoreticalQKS"));
+	if(SampleSize<20)
+		cout<<"WARNING: this expression for QKS in the 2D case is valid only for NSamples>20"<<endl;
+	//draw
+	if( drawOpt.Contains("draw") and not AlreadyDrawn){
+		TString name ="2D MC and QKS distrib";
+		auto myC = new TCanvas(name, name, 500, 0, 1000, 500);
+		myC->cd();
+		//generate the empirical CDF from the vector of the minimum distances, this will be used to estimate the t-values by reversing it
+		MCresults.first->Draw();	
+		MCresults.second->Draw("same");
+		QKSf->SetLineColor(kTeal);
+		QKSf->Draw("same");
+		myC->BuildLegend();
+		myC->Update();
+		AlreadyDrawn = true;
+	}
+	
+	//now evaluate distance and t-value for our data to see if they match or not with myPdf
+	//using both MC and theoretical QKS
+	double D = KolmogorovSmirnovDistance2DCustom(myPdf, data);
+	double t = QKSf->Eval(D), tMC=MCresults.first->Eval(D);
+	return {t,tMC,D};
+}
+//extension of the KS test to 2 dimensions based on custom method
+//in this function there is no fit of the data
+//we just generate data according to a 2D distribution
+//and we use KS test to establish agreement
+void KS_Test2D_Custom(int SampleSize = 50){
+	//prepare data
+	double muX = -4, muY = +3;
+	double sigmaX = 2, sigmaY = 2.8;
+	double rho = 0.8; //correlation btw -1 and 1
+	double x0, y0, x1, y1;
+	x0 = std::max( abs(std::max(muX+5*sigmaX,muY+5*sigmaY)), abs(std::min(muX-5*sigmaX,muY-5*sigmaY)) );
+	y0 = -x0; x1 = x0; y1 = x0; x0 = -x0;
+	TF2* myPdfGen = new TF2("myPdfGen", "ROOT::Math::bigaussian_pdf(x,y,[0],[1],[2],[3],[4])", x0, x1, y0, y1);
+	myPdfGen->SetParameters(sigmaX, sigmaY, rho, muX, muY);
+	auto data = GenData2D(myPdfGen, SampleSize);
+	TH2D* h1 = new TH2D("h1","h1",1000,x0,x1,1000,y0,y1);
+	for( const auto & p : data )
+		h1->Fill(p.first, p.second);
+	
+	vector<double> epss = {0, .0001, .001, .01, .05, .08, .1, .15, .2, .25, .3, .35, .4, .45, .5, .55, .6, .66, .7, .75, .8, .9, 1 };
+	vector<double> ts = epss;
+	vector<double> tsMC = epss;
+	vector<double> Ds = epss;
+	{
+		int i = 0;
+		for( auto & eps : ts ){
+			TF2 myPdf = TF2("myPdfModified", "ROOT::Math::bigaussian_pdf(x,y,[0],[1],[2],[3],[4])", x0, x1, y0, y1);
+			myPdf.SetParameters(sigmaX-eps, sigmaY-eps, rho, muX+eps, muY-eps);
+			
+			auto result = KolmogorovSmirnov2DCustom(*((TF2*)myPdf.Clone("pdf_compare")),data); //KS
+			eps = std::get<0>(result);
+			tsMC[i] = std::get<1>(result);
+			Ds[i] = std::get<2>(result);
+			i++;
+		}
+	}
+	
+	TString namemg = "2DcustomResults;eps;prob";
+	TCanvas* myC = new TCanvas(namemg,namemg,700,700);
+	myC->Divide(2,1);
+	auto mySubC = myC->cd(1);
+	auto mg = new TMultiGraph();
+	mg->SetNameTitle(namemg,namemg);
+	auto myG = new TGraph(epss.size(), &epss[0], &ts[0]);
+	myG->SetTitle("prob from QKS;prob;eps");
+	myG->SetMarkerStyle(20);
+	myG->SetMarkerColor(kTeal);
+	mg->Add(myG);
+	auto myG1 = new TGraph(epss.size(), &epss[0], &tsMC[0]);
+	myG1->SetTitle("prob from MC;prob;eps");
+	myG1->SetMarkerStyle(4);
+	myG1->SetMarkerColor(kRed);
+	mg->Add(myG1);
+	mg->Draw("ap");
+	mySubC->BuildLegend();
+	//myC->SetLogx();
+	myC->cd(2);
+	auto myG2 = new TGraph(epss.size(), &epss[0], &Ds[0]);
+	myG2->SetTitle("distance;eps;D");
+	myG2->SetMarkerStyle(20);
+	myG2->SetMarkerColor(kBlack);
+	myG2->Draw("ap");	
+	myC->Update();
+
 }
 
 void eKStensions(){}
@@ -499,11 +734,12 @@ int main(){
 	auto myApp = new TApplication("myApp", NULL, NULL);
 
 	//Example_KSvsChi2_1D();
-	int N = 1e04, SampleSize = 10;
+	int N = 1e04, SampleSize = 1000;
 	//Lilliefors_Consistency_Test(N, SampleSize);
 	//Extended_Lilliefors_Test(N, SampleSize);
 
-	KS_Test2D();
+	//KS_Test2D_ROOT();
+	KS_Test2D_Custom();
 
 	eKStensions();
 	myApp->Run();
