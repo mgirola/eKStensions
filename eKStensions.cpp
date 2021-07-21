@@ -128,7 +128,7 @@ TF1 QKS_func( double lambda_coeff, int trunc, double xMin, double xMax ){
 			},xMin,xMax,0);
 }
 
-double correlationCoefficient(vector<pair<double,double>> data){
+double correlationCoefficient(vector<pair<double,double>> data){ //FIXME: this does not work and give also values greater than 1 and smaller than -1
     int sum_X = 0, sum_Y = 0, sum_XY = 0;
     int squareSum_X = 0, squareSum_Y = 0;
     for (const auto & p : data){
@@ -615,7 +615,7 @@ pair<TF1*,TH1*> MC_CDFfor2DCustom( TF2 myPdf, int SampleSize, int N ){
 
 
 
-tuple<double,double,double> KolmogorovSmirnov2DCustom( TF2 myPdf, vector<pair<double,double>> data, TString drawOpt = "draw" ){
+tuple<double,double,double> KolmogorovSmirnov2DCustom( TF2 myPdf, vector<pair<double,double>> data, int N_MC = 100, TString drawOpt = "draw" ){
 	
 	int SampleSize = data.size();
 
@@ -624,14 +624,13 @@ tuple<double,double,double> KolmogorovSmirnov2DCustom( TF2 myPdf, vector<pair<do
 	static pair<TF1*, TH1*> MCresults;
 	TF1* myFunc;
 	if ( not AlreadyExecuted ){
-		int N_MC = 100;
 		MCresults = MC_CDFfor2DCustom(*((TF2*)(myPdf.Clone("myPdfTest"))),SampleSize,N_MC);
 		AlreadyExecuted = true;
 	}else
 		cout<<"Warning, already executed, using old statistics, ensure you have not changed myPdf since the first run"<<endl;
 	
 	//Theoretical QKS in 2D case:
-	double rho = correlationCoefficient(data);
+	double rho = myPdf.GetParameter(2);//correlationCoefficient(data);
 	cout<<"rho used: "<<rho<<endl<<"estimated rho = "<<correlationCoefficient(data)<<" rho from bigaussian pdf = "<<myPdf.GetParameter(2)<<endl;
 	double lambda_coeff = sqrt(SampleSize)/(1.+sqrt(1.-(pow(rho,2)*(0.25-0.75/sqrt(SampleSize)))));
 	int trunc = 1000;
@@ -665,7 +664,10 @@ tuple<double,double,double> KolmogorovSmirnov2DCustom( TF2 myPdf, vector<pair<do
 //in this function there is no fit of the data
 //we just generate data according to a 2D distribution
 //and we use KS test to establish agreement
-void KS_Test2D_Custom(int SampleSize = 50){
+void KS_Test2D_Custom(int SampleSize = 100){
+	
+	int N_MC = 100;
+	
 	//prepare data
 	double muX = -4, muY = +3;
 	double sigmaX = 2, sigmaY = 2.8;
@@ -690,7 +692,7 @@ void KS_Test2D_Custom(int SampleSize = 50){
 			TF2 myPdf = TF2("myPdfModified", "ROOT::Math::bigaussian_pdf(x,y,[0],[1],[2],[3],[4])", x0, x1, y0, y1);
 			myPdf.SetParameters(sigmaX-eps, sigmaY-eps, rho, muX+eps, muY-eps);
 			
-			auto result = KolmogorovSmirnov2DCustom(*((TF2*)myPdf.Clone("pdf_compare")),data); //KS
+			auto result = KolmogorovSmirnov2DCustom(*((TF2*)myPdf.Clone("pdf_compare")),data, N_MC); //KS
 			eps = std::get<0>(result);
 			tsMC[i] = std::get<1>(result);
 			Ds[i] = std::get<2>(result);
